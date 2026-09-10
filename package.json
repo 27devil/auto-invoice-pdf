@@ -26,7 +26,8 @@
     "typecheck": "react-router typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "worker:drain": "node --import tsx server/queue/worker.drain.ts"
   },
   "type": "module",
   "engines": {
