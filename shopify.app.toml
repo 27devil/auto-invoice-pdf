@@ -2,11 +2,11 @@
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration
 name = "Auto Invoice PDF"
 client_id = "cd700808cdcd5318f9749cfa56c20a90"
-application_url = "https://REPLACE_WITH_YOUR_APP_URL"
+application_url = "https://auto-invoice-pdf.vercel.app"
 embedded = true
 
 [auth]
-redirect_urls = [ "https://REPLACE_WITH_YOUR_APP_URL/auth/callback" ]
+redirect_urls = [ "https://auto-invoice-pdf.vercel.app/auth/callback" ]
 
 [access_scopes]
 # Scopes are kept minimal on purpose. Each one is documented in docs/shopify-setup.md:
