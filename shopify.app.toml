@@ -1,0 +1,71 @@
+# This file stores configurations for your Shopify app.
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration
+name = "Auto Invoice PDF"
+client_id = "cd700808cdcd5318f9749cfa56c20a90"
+application_url = "https://REPLACE_WITH_YOUR_APP_URL"
+embedded = true
+
+[auth]
+redirect_urls = [ "https://REPLACE_WITH_YOUR_APP_URL/auth/callback" ]
+
+[access_scopes]
+# Scopes are kept minimal on purpose. Each one is documented in docs/shopify-setup.md:
+#   read_orders     - fetch order/line-item/tax/discount/shipping data to build the invoice
+#   read_customers  - resolve customer name/email/phone and billing/shipping context
+#   read_products   - resolve variant SKU/image when not fully present on the order line item
+# No write_ scopes are requested: this app never mutates store data.
+scopes = "read_orders,read_customers,read_products"
+
+[webhooks]
+api_version = "2025-10"
+
+  # Handled by: /app/routes/webhooks.orders.create.tsx
+  # Core workflow trigger: enqueues invoice generation for every new order.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/create"
+  topics = ["orders/create"]
+
+  # Handled by: /app/routes/webhooks.orders.updated.tsx
+  # Used to detect cancellations after an invoice already exists (see spec #89).
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/updated"
+  topics = ["orders/updated"]
+
+  # Handled by: /app/routes/webhooks.orders.cancelled.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/cancelled"
+  topics = ["orders/cancelled"]
+
+  # Handled by: /app/routes/webhooks.app.uninstalled.tsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
+  topics = ["app/uninstalled"]
+
+  # Handled by: /app/routes/webhooks.app.scopes_update.tsx
+  [[webhooks.subscriptions]]
+  topics = ["app/scopes_update"]
+  uri = "/webhooks/app/scopes_update"
+
+  # --- Mandatory GDPR compliance webhooks -------------------------------
+  # Only REQUIRED for public (App Store distributed) apps. This app is
+  # configured for custom/single-shop distribution today (see shopify.app.toml
+  # `client_id` + docs/shopify-setup.md), so these are wired up but left
+  # commented until distribution changes. Handlers already exist at:
+  #   /app/routes/webhooks.customers.data_request.tsx
+  #   /app/routes/webhooks.customers.redact.tsx
+  #   /app/routes/webhooks.shop.redact.tsx
+  # Uncomment before submitting to the App Store.
+  # [[webhooks.subscriptions]]
+  # uri = "/webhooks/customers/data_request"
+  # compliance_topics = ["customers/data_request"]
+
+  # [[webhooks.subscriptions]]
+  # uri = "/webhooks/customers/redact"
+  # compliance_topics = ["customers/redact"]
+
+  # [[webhooks.subscriptions]]
+  # uri = "/webhooks/shop/redact"
+  # compliance_topics = ["shop/redact"]
+
+[build]
+automatically_update_urls_on_dev = true

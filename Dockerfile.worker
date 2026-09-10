@@ -1,0 +1,19 @@
+## Worker process — consumes the BullMQ queue (PDF generation + email
+## sending). Deployed as its own long-running service, separate from the
+## web dyno (spec §75: never run the worker on a serverless runtime).
+## Uses Microsoft's Playwright base image so the exact Chromium build
+## Playwright expects is already present — no version-mismatch surprises.
+## Tag MUST match the "playwright" version pinned in package.json exactly.
+FROM mcr.microsoft.com/playwright:v1.63.0-noble
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json* ./
+RUN npm ci && npm cache clean --force
+
+COPY . .
+RUN npx prisma generate
+
+CMD ["npm", "run", "worker:start"]

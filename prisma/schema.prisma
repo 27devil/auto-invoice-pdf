@@ -1,0 +1,518 @@
+// Auto Invoice PDF — Prisma schema
+// Multi-tenant: every store-specific row carries a shopId (or is reachable
+// through one), so a query that forgets to filter by shop fails loudly
+// instead of leaking data across tenants. See docs/architecture.md.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Shopify auth session storage. Field shape is dictated by
+// @shopify/shopify-app-session-storage-prisma — do not rename/remove fields.
+// ---------------------------------------------------------------------------
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+
+  @@index([shop])
+}
+
+// ---------------------------------------------------------------------------
+// Tenant root
+// ---------------------------------------------------------------------------
+model Shop {
+  id             String    @id @default(cuid())
+  shopDomain     String    @unique
+  shopifyShopGid String?
+  shopName       String?
+  email          String?
+  currency       String    @default("USD")
+  timezone       String    @default("UTC")
+  country        String?
+  installedAt    DateTime  @default(now())
+  uninstalledAt  DateTime?
+
+  // Billing-ready fields (not wired to Shopify Billing yet — see docs/architecture.md §Future)
+  plan                  String  @default("free")
+  subscriptionStatus    String? // e.g. "active" | "cancelled" | "past_due"
+  billingCustomerId     String?
+  billingSubscriptionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyProfile   CompanyProfile?
+  taxSettings      TaxSettings?
+  emailSettings    EmailSettings?
+  storeSettings    StoreSettings?
+  designSettings   InvoiceDesignSettings?
+  invoices         Invoice[]
+  invoiceSequences InvoiceNumberSequence[]
+  emailDeliveries  EmailDelivery[]
+  webhookEvents    WebhookEvent[]
+  auditLogs        AuditLog[]
+  creditNotes      CreditNote[]
+  customers        Customer[]
+}
+
+// ---------------------------------------------------------------------------
+// Settings (Settings page §26) — one row per shop per section
+// ---------------------------------------------------------------------------
+
+model CompanyProfile {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  companyName        String  @default("")
+  legalBusinessName  String?
+  logoStorageKey     String? // key in StorageService, not a public URL
+  addressLine1       String?
+  addressLine2       String?
+  city               String?
+  state              String?
+  postalCode         String?
+  country            String?
+  phone              String?
+  email              String?
+  website            String?
+  taxId              String? // GST/VAT/EIN etc., label controlled by TaxSettings
+  registrationNumber String?
+  bankDetails        String? // free-text, merchant-controlled payment/bank info block
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum TaxDisplayMode {
+  TAX_EXCLUSIVE
+  TAX_INCLUSIVE
+}
+
+model TaxSettings {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  taxDisplay      TaxDisplayMode @default(TAX_EXCLUSIVE)
+  defaultTaxLabel String         @default("Tax")
+
+  // India-specific fields are shown on the PDF only when populated — never
+  // assumed. See docs/pdf.md §Tax.
+  showIndiaGstFields Boolean @default(false)
+  companyGstin       String?
+
+  // Metafield mapping (spec §15): namespace.key strings resolved at invoice
+  // generation time. Left blank = not mapped, field omitted from the PDF.
+  gstinMetafield       String? // e.g. "custom.gstin"
+  poNumberMetafield    String? // e.g. "custom.po_number"
+  companyNameMetafield String? // e.g. "custom.company_name"
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum EmailProviderType {
+  RESEND
+  SENDGRID
+  SES
+  SMTP
+}
+
+enum InvoiceDeliveryMode {
+  NATIVE_PLUS_INVOICE_EMAIL // Option 1 (default): Shopify's native confirmation + a separate app invoice email
+  APP_CONFIRMATION_WITH_INVOICE // Option 2: app sends the only confirmation-style email, invoice attached
+  INVOICE_EMAIL_ONLY // Option 3: same as option 1's email but merchant has turned off Shopify's native email themselves
+  DISABLED // Option 4: generate invoices, never email them
+}
+
+model EmailSettings {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  deliveryMode     InvoiceDeliveryMode @default(NATIVE_PLUS_INVOICE_EMAIL)
+  autoEmailEnabled Boolean             @default(false) // requires provider to be configured first — validated in SettingsService
+
+  provider    EmailProviderType @default(RESEND)
+  senderName  String?
+  senderEmail String?
+  replyTo     String?
+
+  subjectTemplate  String @default("Order #{{order_number}} confirmed — Invoice {{invoice_number}}")
+  greetingTemplate String @default("Hello {{customer_name}},")
+  bodyTemplate     String @default("Thank you for your order with {{company_name}}.\n\nYour order #{{order_number}} has been confirmed. Your invoice is attached to this email.\n\nInvoice: {{invoice_number}}\nOrder total: {{currency}} {{total}}\n\nIf you have any questions, contact {{support_email}}.")
+  footerTemplate   String @default("Regards,\n{{company_name}}")
+
+  testMode         Boolean @default(true) // ON by default so a fresh install can never email real customers
+  testEmailAddress String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum StorageProviderType {
+  LOCAL
+  S3
+  R2
+  SUPABASE
+}
+
+enum InvoiceNumberResetPolicy {
+  NEVER
+  YEARLY
+  MONTHLY
+}
+
+model StoreSettings {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // GENERAL
+  invoicingEnabled Boolean @default(true)
+
+  // NUMBERING
+  invoiceNumberPrefix    String                   @default("INV")
+  invoiceNumberFormat    String                   @default("{PREFIX}-{YEAR}-{SEQUENCE}")
+  invoiceNumberPadding   Int                      @default(6)
+  invoiceNumberStart     Int                      @default(1)
+  invoiceNumberReset     InvoiceNumberResetPolicy @default(YEARLY)
+  creditNoteNumberPrefix String                   @default("CN")
+
+  // INVOICE formatting
+  dateFormat     String @default("dd MMM yyyy")
+  dueDateDaysOut Int    @default(0) // 0 = due on invoice date
+
+  // STORAGE (non-secret config; keys/secrets stay in env vars — spec §116)
+  storageProvider     StorageProviderType @default(LOCAL)
+  storageBucket       String?
+  storageRegion       String?
+  storageEndpoint     String?
+  signedUrlTtlSeconds Int                 @default(900) // 15 minutes, spec §67
+
+  // ADVANCED
+  testModeEnabled   Boolean @default(true)
+  dataRetentionDays Int? // null = retain indefinitely
+  maxEmailRetries   Int     @default(5)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model InvoiceDesignSettings {
+  id     String @id @default(cuid())
+  shopId String @unique
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  accentColor String @default("#1A1A1A")
+  fontFamily  String @default("Helvetica")
+
+  showSku           Boolean @default(true)
+  showProductImage  Boolean @default(false)
+  showDiscount      Boolean @default(true)
+  showTax           Boolean @default(true)
+  showShipping      Boolean @default(true)
+  showCustomerPhone Boolean @default(false)
+  showCompanyOnBill Boolean @default(true)
+  showPaymentInfo   Boolean @default(true)
+  showBankInfo      Boolean @default(false)
+  showNotes         Boolean @default(true)
+
+  footerText   String @default("Thank you for your business.")
+  termsText    String @default("")
+  defaultNotes String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Invoice numbering — atomic per-shop, per-period counter (spec §8)
+// periodKey is "ALL" for a continuous sequence, "2026" for yearly reset,
+// "2026-09" for monthly reset. Incremented with a single atomic UPSERT+
+// increment SQL statement — see server/invoices/numbering.server.ts.
+// ---------------------------------------------------------------------------
+model InvoiceNumberSequence {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  periodKey String
+  nextValue Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@unique([shopId, periodKey])
+}
+
+// ---------------------------------------------------------------------------
+// Invoices
+// ---------------------------------------------------------------------------
+enum InvoiceStatus {
+  GENERATING
+  GENERATED
+  FAILED
+  CANCELLED
+}
+
+enum InvoicePaymentStatus {
+  PENDING
+  AUTHORIZED
+  PARTIALLY_PAID
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  VOIDED
+}
+
+enum InvoiceEmailStatus {
+  NOT_SENT
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+}
+
+model Invoice {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  shopifyOrderId     String // numeric Shopify order id, as a string (safe for bigint-range ids)
+  shopifyOrderGid    String
+  shopifyOrderNumber Int
+
+  invoiceNumber String
+  invoiceStatus InvoiceStatus @default(GENERATING)
+  invoiceDate   DateTime      @default(now())
+  dueDate       DateTime?
+  pdfVersion    Int           @default(1)
+
+  currency      String
+  subtotal      Decimal              @db.Decimal(18, 4)
+  discountTotal Decimal              @db.Decimal(18, 4)
+  shippingTotal Decimal              @db.Decimal(18, 4)
+  taxTotal      Decimal              @db.Decimal(18, 4)
+  total         Decimal              @db.Decimal(18, 4)
+  amountPaid    Decimal              @default(0) @db.Decimal(18, 4)
+  balanceDue    Decimal              @db.Decimal(18, 4)
+  paymentStatus InvoicePaymentStatus @default(PENDING)
+
+  customerName    String
+  customerEmail   String?
+  customerPhone   String?
+  billingAddress  Json?
+  shippingAddress Json?
+  companyName     String? // customer's own company (B2B), distinct from CompanyProfile (the merchant's)
+  customerTaxId   String?
+  poNumber        String?
+
+  pdfStorageKey String?
+  pdfChecksum   String?
+
+  emailStatus       InvoiceEmailStatus @default(NOT_SENT)
+  emailStatusReason String? // e.g. CUSTOMER_EMAIL_MISSING
+  emailSentAt       DateTime?
+
+  cancelledAt  DateTime?
+  currentJobId String? // last BullMQ job id touching this invoice, for admin troubleshooting
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items           InvoiceItem[]
+  emailDeliveries EmailDelivery[]
+  creditNotes     CreditNote[]
+
+  @@unique([shopId, invoiceNumber])
+  @@unique([shopId, shopifyOrderId])
+  @@index([shopId, createdAt])
+  @@index([shopId, customerEmail])
+}
+
+model InvoiceItem {
+  id        String  @id @default(cuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  shopifyLineItemId String?
+  sku               String? // null/missing renders as "N/A" on the PDF, never breaks generation
+  productTitle      String
+  variantTitle      String?
+  imageUrl          String?
+
+  quantity       Int
+  unitPrice      Decimal @db.Decimal(18, 4)
+  discountAmount Decimal @default(0) @db.Decimal(18, 4)
+  taxAmount      Decimal @default(0) @db.Decimal(18, 4)
+  lineTotal      Decimal @db.Decimal(18, 4)
+  position       Int     @default(0)
+
+  @@index([invoiceId])
+}
+
+// ---------------------------------------------------------------------------
+// Email delivery log (spec §20, §56)
+// ---------------------------------------------------------------------------
+enum EmailDeliveryTrigger {
+  AUTOMATIC
+  MANUAL_RESEND
+  TEST
+}
+
+enum EmailDeliveryStatus {
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  FAILED
+  BOUNCED
+}
+
+model EmailDelivery {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  invoiceId String?
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  recipient         String
+  trigger           EmailDeliveryTrigger @default(AUTOMATIC)
+  provider          EmailProviderType
+  providerMessageId String?
+  status            EmailDeliveryStatus  @default(QUEUED)
+
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  openedAt     DateTime?
+  bouncedAt    DateTime?
+  failedAt     DateTime?
+  errorMessage String?
+  retryCount   Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopId, invoiceId])
+}
+
+// ---------------------------------------------------------------------------
+// Webhook idempotency (spec §34)
+// ---------------------------------------------------------------------------
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+model WebhookEvent {
+  id     String  @id @default(cuid())
+  shopId String?
+  shop   Shop?   @relation(fields: [shopId], references: [id], onDelete: SetNull)
+
+  shopDomain       String
+  shopifyWebhookId String // X-Shopify-Webhook-Id header — globally unique per Shopify
+  topic            String
+  payloadHash      String
+  status           WebhookEventStatus @default(RECEIVED)
+  receivedAt       DateTime           @default(now())
+  processedAt      DateTime?
+  errorMessage     String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([shopifyWebhookId])
+  @@index([shopId, topic])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (spec §41)
+// ---------------------------------------------------------------------------
+model AuditLog {
+  id         String  @id @default(cuid())
+  shopId     String
+  shop       Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  action     String // e.g. "invoice.created", "invoice.regenerated", "email.sent", "settings.updated"
+  entityType String?
+  entityId   String?
+  metadata   Json?
+  actor      String  @default("system") // "system" | "merchant" | an email address
+
+  createdAt DateTime @default(now())
+
+  @@index([shopId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Credit notes — schema in place per spec §29; UI ships in a later pass.
+// ---------------------------------------------------------------------------
+enum CreditNoteStatus {
+  GENERATING
+  GENERATED
+  FAILED
+}
+
+model CreditNote {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  invoiceId String?
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  shopifyRefundId  String?
+  creditNoteNumber String
+  status           CreditNoteStatus @default(GENERATING)
+  currency         String
+  total            Decimal          @db.Decimal(18, 4)
+  pdfStorageKey    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([shopId, creditNoteNumber])
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight customer cache — powers invoice search/filter by customer
+// without re-querying Shopify on every keystroke.
+// ---------------------------------------------------------------------------
+model Customer {
+  id     String @id @default(cuid())
+  shopId String
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  shopifyCustomerId String?
+  name              String?
+  email             String?
+  phone             String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shopId, email])
+  @@index([shopId, shopifyCustomerId])
+}

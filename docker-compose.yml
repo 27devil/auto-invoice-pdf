@@ -1,0 +1,81 @@
+version: "3.9"
+
+# Local development stack (spec §50). Production should run `app` and
+# `worker` as separate deployed services (see docs/deployment.md) rather
+# than via this compose file — this is for `docker compose up` locally.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: auto_invoice_pdf
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/auto_invoice_pdf
+      REDIS_URL: redis://redis:6379
+      STORAGE_PROVIDER: local
+      STORAGE_LOCAL_DIR: /app/.data/storage
+    volumes:
+      - storage_data:/app/.data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/auto_invoice_pdf
+      REDIS_URL: redis://redis:6379
+      STORAGE_PROVIDER: local
+      STORAGE_LOCAL_DIR: /app/.data/storage
+    volumes:
+      - storage_data:/app/.data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:
