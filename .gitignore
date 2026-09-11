@@ -31,7 +31,6 @@ dist/
 node_modules
 node_modules/
 npm-debug.log*
-package-lock.json
 pnpm-lock.yaml
 prisma/dev.db
 yarn.lock
