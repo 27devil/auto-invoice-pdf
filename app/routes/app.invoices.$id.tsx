@@ -1,4 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs, HeadersFunction } from "react-router";
+import { useEffect, useState } from "react";
 import { useLoaderData, useFetcher, useNavigate } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -72,9 +73,57 @@ export default function InvoiceDetail() {
 
   const busy = fetcher.state !== "idle";
 
+  // The PDF route is authenticated (authenticate.admin), and Shopify's
+  // embedded App Bridge only attaches the session token to same-origin
+  // fetch()/XHR calls made from the app's own JS -- never to a raw
+  // <iframe src> or <a href> navigation. So we fetch the signed URL
+  // ourselves (authenticated, same-origin) and then point the iframe /
+  // open a new tab at that *external* URL directly, which needs no
+  // Shopify auth at all.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviewUrl(null);
+    setPreviewError(null);
+    fetch(`/api/invoices/${invoice.id}/pdf`)
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok || !data?.url) {
+          setPreviewError(data?.error || "PDF preview is not available.");
+          return;
+        }
+        setPreviewUrl(data.url);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewError("Could not load the PDF preview.");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Re-fetch once a resend/regenerate action completes, since that can
+    // produce a freshly generated PDF.
+  }, [invoice.id, fetcher.data]);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/pdf?download=1`);
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.url) {
+        window.open(data.url, "_blank");
+      }
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <s-page heading={`Invoice ${invoice.invoiceNumber}`}>
-      <s-button slot="primary-action" href={`/api/invoices/${invoice.id}/pdf`} target="_blank">
+      <s-button slot="primary-action" onClick={handleDownload} {...(downloading ? { loading: true } : {})}>
         Download PDF
       </s-button>
       <s-button slot="secondary-actions" variant="tertiary" onClick={() => navigate("/app/invoices")}>
@@ -172,11 +221,19 @@ export default function InvoiceDetail() {
       </s-section>
 
       <s-section heading="PDF preview">
-        <iframe
-          src={`/api/invoices/${invoice.id}/pdf`}
-          title={downloadFilename}
-          style={{ width: "100%", height: "600px", border: "1px solid #e1e3e5", borderRadius: 8 }}
-        />
+        {previewUrl ? (
+          <iframe
+            src={previewUrl}
+            title={downloadFilename}
+            style={{ width: "100%", height: "600px", border: "1px solid #e1e3e5", borderRadius: 8 }}
+          />
+        ) : previewError ? (
+          <s-banner tone="warning">
+            <s-paragraph>{previewError}</s-paragraph>
+          </s-banner>
+        ) : (
+          <s-paragraph>Loading preview...</s-paragraph>
+        )}
       </s-section>
 
       <s-section slot="aside" heading="Activity">

@@ -18,7 +18,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   });
 
   if (!invoice.pdfStorageKey) {
-    return new Response("PDF has not been generated yet. It will be ready shortly after the order was created.", { status: 404 });
+    return Response.json(
+      { error: "PDF has not been generated yet. It will be ready shortly after the order was created." },
+      { status: 404 },
+    );
   }
 
   const url = new URL(request.url);
@@ -31,5 +34,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     disposition: download ? "attachment" : "inline",
   });
 
-  return Response.redirect(new URL(signedUrl, request.url).toString(), 302);
+  // Return the signed URL as JSON instead of redirecting: this route is
+  // authenticated (authenticate.admin), and Shopify's embedded App Bridge
+  // only attaches the session token to same-origin fetch()/XHR calls made
+  // from the app's own JS -- never to a raw <iframe src> or <a href>
+  // navigation. The frontend fetches this JSON (authenticated, same-origin)
+  // and then opens the *external* signed URL directly, which needs no
+  // Shopify auth at all.
+  return Response.json({ url: new URL(signedUrl, request.url).toString() });
 };
